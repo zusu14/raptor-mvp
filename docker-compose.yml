@@ -1,0 +1,33 @@
+# docker-compose.yml
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./backend/app:/app/app
+      - ./data:/app/data
+      - ./templates:/app/templates
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  web:
+    working_dir: /app
+    image: node:20-alpine
+    ports: ["5173:5173"]
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm install && npm run dev -- --host"
+
+  # 任意: MinIO（S3互換）。必要時だけ起動
+  # minio:
+  #   image: quay.io/minio/minio:RELEASE.2024-12-07T00-00-00Z
+  #   command: server /data --console-address ":9001"
+  #   environment:
+  #     - MINIO_ROOT_USER=minio
+  #     - MINIO_ROOT_PASSWORD=minio123
+  #   ports:
+  #     - "9000:9000"
+  #     - "9001:9001"
+  #   volumes:
+  #     - ./data/minio:/data
