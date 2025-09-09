@@ -38,13 +38,21 @@ def init_db() -> None:
     import app.models.observation_polygon  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
-    # SQLite 簡易マイグレーション: observations.individual_id が存在しなければ追加
+    # SQLite 簡易マイグレーション（既存DBの不足カラムを追加）
     try:
         with engine.connect() as conn:
-            cols = conn.exec_driver_sql("PRAGMA table_info(observations)").fetchall()
-            names = {row[1] for row in cols}  # (cid, name, type, ...)
-            if "individual_id" not in names:
+            # observations.individual_id
+            cols_obs = conn.exec_driver_sql("PRAGMA table_info(observations)").fetchall()
+            names_obs = {row[1] for row in cols_obs}
+            if "individual_id" not in names_obs:
                 conn.exec_driver_sql("ALTER TABLE observations ADD COLUMN individual_id VARCHAR")
+
+            # surveys.area_bbox
+            cols_surv = conn.exec_driver_sql("PRAGMA table_info(surveys)").fetchall()
+            names_surv = {row[1] for row in cols_surv}
+            if "area_bbox" not in names_surv:
+                # SQLite の JSON は TEXT として扱われるため TEXT で追加
+                conn.exec_driver_sql("ALTER TABLE surveys ADD COLUMN area_bbox TEXT")
     except Exception:
         # ログは省略（MVP）。失敗しても起動続行。
         pass

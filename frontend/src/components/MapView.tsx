@@ -20,6 +20,12 @@ export default function MapView() {
   const [hiddenIndividualIds, setHiddenIndividualIds] = useState<string[]>([]);
   const [savedPanelOpen, setSavedPanelOpen] = useState<boolean>(false);
   const [expandedIndividuals, setExpandedIndividuals] = useState<string[]>([]);
+  const [exportPanelOpen, setExportPanelOpen] = useState<boolean>(false);
+  const [exportEpsg, setExportEpsg] = useState<number>(6677);
+  const [exportEncoding, setExportEncoding] = useState<string>("CP932");
+  const [exportVisibleOnly, setExportVisibleOnly] = useState<boolean>(true);
+  const [exportSelectedIds, setExportSelectedIds] = useState<string[]>([]);
+  const [exportBusy, setExportBusy] = useState<boolean>(false);
 
   // 入力フォーム状態
   const [surveyId, setSurveyId] = useState<number>(1);
@@ -59,17 +65,7 @@ export default function MapView() {
       styles: drawStyles,
       controls: { point: true, line_string: true, polygon: true, trash: true },
     } as any);
-    // Debug: verify styles actually applied (check console)
-    try {
-      const styles = (draw as any).options?.styles as any[] | undefined;
-      if (styles) {
-        // Log only draw line styles
-        const sample = styles
-          .filter((l) => String(l.id).includes("gl-draw-lines"))
-          .map((l) => ({ id: l.id, lineDash: l.paint?.["line-dasharray"] }));
-        console.log("Draw styles (gl-draw-lines):", sample);
-      }
-    } catch {}
+    // Debug log removed
     map.addControl(draw, "top-left");
     drawRef.current = draw;
     map.addControl(new maplibregl.NavigationControl(), "bottom-right");
@@ -180,6 +176,7 @@ export default function MapView() {
   function ensureSavedLayers() {
     const map = mapRef.current;
     if (!map) return;
+    if (!map.isStyleLoaded()) return; // guard until style is fully loaded
     if (!map.getSource("saved")) {
       map.addSource("saved", {
         type: "geojson",
@@ -272,11 +269,25 @@ export default function MapView() {
   async function loadSaved() {
     const map = mapRef.current;
     if (!map) return;
+    if (!map.isStyleLoaded()) {
+      // wait for style load then retry once
+      map.once("load", () => {
+        ensureSavedLayers();
+        // fire-and-forget reload
+        setTimeout(() => { loadSaved(); }, 0);
+      });
+      return;
+    }
     ensureSavedLayers();
     try {
       const res = await api.get("/observations/features", { params: { survey_id: surveyId } });
       const fc = res.data;
       setSavedFeatures(fc?.features || []);
+      // エクスポート用の個体ID初期化（未選択→全件）
+      const ids = Array.from(
+        new Set((fc?.features || []).map((f: any) => f?.properties?.individual_id).filter(Boolean))
+      ) as string[];
+      setExportSelectedIds((prev) => (prev && prev.length ? prev : ids));
       const src = map.getSource("saved") as any;
       if (src) src.setData(fc);
       // 反映
@@ -432,6 +443,135 @@ export default function MapView() {
                     });
                   })()}
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* エクスポートパネル */}
+          <div style={{ border: "1px solid #ddd", borderRadius: 6 }}>
+            <div
+              style={{ padding: 8, cursor: "pointer", display: "flex", alignItems: "center" }}
+              onClick={() => setExportPanelOpen((v) => !v)}
+            >
+              <span style={{ fontWeight: 600 }}>エクスポート（Shapefile）</span>
+              <span style={{ marginLeft: "auto" }}>{exportPanelOpen ? "▾" : "▸"}</span>
+            </div>
+            {exportPanelOpen && (
+              <div style={{ padding: 8, display: "grid", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <label>
+                    EPSG
+                    <select
+                      value={exportEpsg}
+                      onChange={(e) => setExportEpsg(parseInt(e.target.value, 10))}
+                      style={{ width: 140, marginLeft: 6 }}
+                    >
+                      {Array.from({ length: 6687 - 6669 + 1 }, (_, i) => 6669 + i).map((code) => (
+                        <option key={code} value={code}>
+                          {code}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    文字コード
+                    <select
+                      value={exportEncoding}
+                      onChange={(e) => setExportEncoding(e.target.value)}
+                      style={{ width: 120, marginLeft: 6 }}
+                    >
+                      <option value="CP932">CP932</option>
+                      <option value="UTF-8">UTF-8</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportVisibleOnly}
+                    onChange={(e) => setExportVisibleOnly(e.target.checked)}
+                  />
+                  現在表示中のみ（個体IDトグルを反映）
+                </label>
+                {!exportVisibleOnly && (
+                  <div style={{ maxHeight: 160, overflow: "auto", border: "1px solid #eee", borderRadius: 4, padding: 6 }}>
+                    <div style={{ marginBottom: 6, display: "flex", gap: 8 }}>
+                      <button
+                        onClick={() => {
+                          const ids = Array.from(
+                            new Set((savedFeatures || []).map((f: any) => f?.properties?.individual_id).filter(Boolean))
+                          ) as string[];
+                          setExportSelectedIds(ids);
+                        }}
+                      >
+                        全選択
+                      </button>
+                      <button onClick={() => setExportSelectedIds([])}>全解除</button>
+                    </div>
+                    {Array.from(
+                      new Set((savedFeatures || []).map((f: any) => f?.properties?.individual_id).filter(Boolean))
+                    )
+                      .sort()
+                      .map((id: any) => {
+                        const checked = exportSelectedIds.includes(id);
+                        return (
+                          <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                setExportSelectedIds((prev) => {
+                                  const set = new Set(prev);
+                                  if (e.target.checked) set.add(id);
+                                  else set.delete(id);
+                                  return Array.from(set);
+                                });
+                              }}
+                            />
+                            <span style={{ fontFamily: "monospace" }}>{id}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                )}
+                <button
+                  disabled={exportBusy}
+                  onClick={async () => {
+                    try {
+                      setExportBusy(true);
+                      // 個体IDの決定
+                      let ids: string[] = [];
+                      if (exportVisibleOnly) {
+                        const allIds = Array.from(
+                          new Set((savedFeatures || []).map((f: any) => f?.properties?.individual_id).filter(Boolean))
+                        ) as string[];
+                        const visible = allIds.filter((id) => !hiddenIndividualIds.includes(id));
+                        ids = visible;
+                      } else {
+                        ids = exportSelectedIds;
+                      }
+                      const params: any = {
+                        survey_id: surveyId,
+                        target_epsg: exportEpsg,
+                        encoding: exportEncoding,
+                      };
+                      if (ids && ids.length) params.individual_ids = ids.join(",");
+                      const res = await api.post("/export/shapefile", null, { params });
+                      const dl = res?.data?.download as string | undefined;
+                      if (dl) {
+                        const url = `${api.defaults.baseURL}${dl}`;
+                        window.open(url, "_blank");
+                      }
+                    } catch (e: any) {
+                      alert(`エクスポートに失敗しました: ${e?.response?.data?.detail || e.message}`);
+                    } finally {
+                      setExportBusy(false);
+                    }
+                  }}
+                >
+                  {exportBusy ? "エクスポート中..." : "エクスポート"}
+                </button>
+                <div style={{ color: "#666" }}>ファイル名: 調査日_個体ID_型.shp をZIPにまとめます。</div>
               </div>
             )}
           </div>
