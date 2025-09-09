@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routers import auth, surveys, observations, flightlines, photos, export, report
+from app.db import init_db
 
 app = FastAPI(title="Raptor MVP API", version="0.1.0")
 
@@ -15,6 +16,12 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# 初回起動時にDBスキーマを作成
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 app.include_router(auth.router,         prefix="/auth",         tags=["auth"])
 app.include_router(surveys.router,      prefix="/surveys",      tags=["surveys"])
