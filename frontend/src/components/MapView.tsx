@@ -19,6 +19,7 @@ export default function MapView() {
   const [savedFeatures, setSavedFeatures] = useState<any[]>([]);
   const [hiddenIndividualIds, setHiddenIndividualIds] = useState<string[]>([]);
   const [savedPanelOpen, setSavedPanelOpen] = useState<boolean>(false);
+  const [expandedIndividuals, setExpandedIndividuals] = useState<string[]>([]);
 
   // 入力フォーム状態
   const [surveyId, setSurveyId] = useState<number>(1);
@@ -28,6 +29,7 @@ export default function MapView() {
   const [startedAt, setStartedAt] = useState<string>("");
   const [endedAt, setEndedAt] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
+  const [individualId, setIndividualId] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
   const [msg, setMsg] = useState<string>("");
   useEffect(() => {
@@ -126,15 +128,16 @@ export default function MapView() {
     const startedIso = new Date(startedAt).toISOString();
     const endedIso = new Date(endedAt).toISOString();
 
-    const payload = {
-      observation: {
-        survey_id: surveyId,
-        species,
-        count,
-        behavior,
-        started_at: startedIso,
-        ended_at: endedIso,
-        notes,
+      const payload = {
+        observation: {
+          survey_id: surveyId,
+          individual_id: individualId || null,
+          species,
+          count,
+          behavior,
+          started_at: startedIso,
+          ended_at: endedIso,
+          notes,
       },
       feature: {
         type: "Feature",
@@ -322,7 +325,7 @@ export default function MapView() {
               <span style={{ marginLeft: "auto" }}>{savedPanelOpen ? "▾" : "▸"}</span>
             </div>
             {savedPanelOpen && (
-              <div style={{ padding: 8, display: "grid", gap: 8, maxHeight: 220, overflow: "auto" }}>
+              <div style={{ padding: 8, display: "grid", gap: 8, maxHeight: 260, overflow: "auto" }}>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
                     onClick={() => {
@@ -348,37 +351,86 @@ export default function MapView() {
                   </button>
                 </div>
                 <div>
-                  {(savedFeatures || []).map((f: any, i: number) => {
-                    const p = f?.properties || {};
-                    const id = p.individual_id as string | undefined;
-                    if (!id) return null;
-                    const hidden = hiddenIndividualIds.includes(id);
-                    const base = `${id}`;
-                    const meta = `${p.species ?? ""}`;
-                    const type = f?.geometry?.type;
-                    return (
-                      <div key={`${id}-${i}`} style={{ display: "flex", alignItems: "center", padding: "4px 0", borderBottom: "1px dashed #eee" }}>
-                        <button
-                          title={hidden ? "表示" : "非表示"}
-                          onClick={() => {
-                            setHiddenIndividualIds((prev) => {
-                              const set = new Set(prev);
-                              if (hidden) set.delete(id); else set.add(id);
-                              return Array.from(set);
-                            });
-                            // setState 非同期のため、少し遅延して適用
-                            setTimeout(applySavedFilters, 0);
-                          }}
-                          style={{ width: 28 }}
-                        >
-                          {hidden ? "🙈" : "👁️"}
-                        </button>
-                        <div style={{ marginLeft: 8, fontFamily: "monospace" }}>{base}</div>
-                        <div style={{ marginLeft: 8, color: "#555" }}>{meta}</div>
-                        <div style={{ marginLeft: "auto", color: "#999" }}>{type}</div>
-                      </div>
-                    );
-                  })}
+                  {(() => {
+                    const groups: Record<string, any[]> = {};
+                    for (const f of savedFeatures || []) {
+                      const id = f?.properties?.individual_id;
+                      if (!id) continue;
+                      (groups[id] = groups[id] || []).push(f);
+                    }
+                    const ids = Object.keys(groups).sort();
+                    return ids.map((id) => {
+                      const hidden = hiddenIndividualIds.includes(id);
+                      const expanded = expandedIndividuals.includes(id);
+                      const species = groups[id][0]?.properties?.species ?? "";
+                      return (
+                        <div key={id} style={{ borderBottom: "1px dashed #eee", padding: "4px 0" }}>
+                          <div style={{ display: "flex", alignItems: "center" }}>
+                            <button
+                              title={hidden ? "表示" : "非表示"}
+                              onClick={() => {
+                                setHiddenIndividualIds((prev) => {
+                                  const set = new Set(prev);
+                                  if (hidden) set.delete(id); else set.add(id);
+                                  return Array.from(set);
+                                });
+                                setTimeout(applySavedFilters, 0);
+                              }}
+                              style={{ width: 28 }}
+                            >
+                              {hidden ? "🙈" : "👁️"}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setExpandedIndividuals((prev) => {
+                                  const set = new Set(prev);
+                                  if (expanded) set.delete(id); else set.add(id);
+                                  return Array.from(set);
+                                });
+                              }}
+                              style={{ marginLeft: 6 }}
+                              title={expanded ? "閉じる" : "展開"}
+                            >
+                              {expanded ? "▾" : "▸"}
+                            </button>
+                            <div style={{ marginLeft: 8, fontFamily: "monospace" }}>{id}</div>
+                            <div style={{ marginLeft: 8, color: "#555" }}>{species}</div>
+                            <div style={{ marginLeft: "auto", color: "#999" }}>{groups[id].length}件</div>
+                          </div>
+                          {expanded && (
+                            <div style={{ paddingLeft: 36, marginTop: 4, display: "grid", gap: 4 }}>
+                              {groups[id].map((f, i) => {
+                                const p = f.properties || {};
+                                const t = f.geometry?.type;
+                                const label = t === "Point" ? "点" : t === "LineString" ? "線" : t === "Polygon" ? "面" : t;
+                                return (
+                                  <div key={`${id}-${t}-${p.feature_id}-${i}`} style={{ display: "flex", alignItems: "center" }}>
+                                    <div style={{ width: 24, color: "#666" }}>{label}</div>
+                                    <div style={{ marginLeft: 8, color: "#666" }}>obs:{p.observation_id}</div>
+                                    <div style={{ marginLeft: 8, color: "#999" }}>id:{p.feature_id}</div>
+                                    <button
+                                      style={{ marginLeft: "auto", color: "#b00" }}
+                                      title="削除"
+                                      onClick={async () => {
+                                        try {
+                                          await api.delete("/observations/feature", { params: { feature_table: p.feature_table, feature_id: p.feature_id } });
+                                          await loadSaved();
+                                        } catch (e) {
+                                          console.warn("delete failed", e);
+                                        }
+                                      }}
+                                    >
+                                      削除
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             )}
@@ -439,6 +491,15 @@ export default function MapView() {
               value={species}
               onChange={(e) => setSpecies(e.target.value)}
               placeholder="例: ハイタカ"
+              style={{ width: "100%" }}
+            />
+          </label>
+          <label>
+            個体ID
+            <input
+              value={individualId}
+              onChange={(e) => setIndividualId(e.target.value)}
+              placeholder="例: IND-2025-001"
               style={{ width: "100%" }}
             />
           </label>

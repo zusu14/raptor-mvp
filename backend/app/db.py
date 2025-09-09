@@ -38,6 +38,17 @@ def init_db() -> None:
     import app.models.observation_polygon  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
+    # SQLite 簡易マイグレーション: observations.individual_id が存在しなければ追加
+    try:
+        with engine.connect() as conn:
+            cols = conn.exec_driver_sql("PRAGMA table_info(observations)").fetchall()
+            names = {row[1] for row in cols}  # (cid, name, type, ...)
+            if "individual_id" not in names:
+                conn.exec_driver_sql("ALTER TABLE observations ADD COLUMN individual_id VARCHAR")
+    except Exception:
+        # ログは省略（MVP）。失敗しても起動続行。
+        pass
+
 
 def get_db():
     db: Session = SessionLocal()

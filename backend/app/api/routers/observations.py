@@ -23,6 +23,7 @@ def record_observation(payload: RecordIn, db: Session = Depends(get_db)):
     obs_in = payload.observation
     obs = Observation(
         survey_id=obs_in.survey_id,
+        individual_id=obs_in.individual_id,
         species=obs_in.species,
         count=obs_in.count,
         behavior=obs_in.behavior,
@@ -77,27 +78,23 @@ def list_features(survey_id: int | None = None, db: Session = Depends(get_db)):
             geom = json.loads(fl.geometry)
         except Exception:
             continue
-        overlay = max(1, int(obs.count or 1))
-        for idx in range(1, overlay + 1):
-            feats.append({
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {
-                    "feature_table": "flightlines",
-                    "feature_id": fl.id,
-                    "observation_id": obs.id,
-                    "survey_id": obs.survey_id,
-                    "species": obs.species,
-                    "count": obs.count,
-                    "behavior": obs.behavior,
-                    "started_at": obs.started_at.isoformat() if obs.started_at else None,
-                    "ended_at": obs.ended_at.isoformat() if obs.ended_at else None,
-                    "notes": obs.notes,
-                    "individual_id": f"IND-{obs.id}-{idx}",
-                    "individual_index": idx,
-                    "overlay_count": overlay,
-                }
-            })
+        feats.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": {
+                "feature_table": "flightlines",
+                "feature_id": fl.id,
+                "observation_id": obs.id,
+                "survey_id": obs.survey_id,
+                "species": obs.species,
+                "count": obs.count,
+                "behavior": obs.behavior,
+                "started_at": obs.started_at.isoformat() if obs.started_at else None,
+                "ended_at": obs.ended_at.isoformat() if obs.ended_at else None,
+                "notes": obs.notes,
+                "individual_id": (obs.individual_id or f"IND-{obs.id}"),
+            }
+        })
 
     # Point
     qp = db.query(ObservationPoint, Observation).join(Observation, ObservationPoint.observation_id == Observation.id)
@@ -108,27 +105,23 @@ def list_features(survey_id: int | None = None, db: Session = Depends(get_db)):
             geom = json.loads(pt.geometry)
         except Exception:
             continue
-        overlay = max(1, int(obs.count or 1))
-        for idx in range(1, overlay + 1):
-            feats.append({
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {
-                    "feature_table": "observation_points",
-                    "feature_id": pt.id,
-                    "observation_id": obs.id,
-                    "survey_id": obs.survey_id,
-                    "species": obs.species,
-                    "count": obs.count,
-                    "behavior": obs.behavior,
-                    "started_at": obs.started_at.isoformat() if obs.started_at else None,
-                    "ended_at": obs.ended_at.isoformat() if obs.ended_at else None,
-                    "notes": obs.notes,
-                    "individual_id": f"IND-{obs.id}-{idx}",
-                    "individual_index": idx,
-                    "overlay_count": overlay,
-                }
-            })
+        feats.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": {
+                "feature_table": "observation_points",
+                "feature_id": pt.id,
+                "observation_id": obs.id,
+                "survey_id": obs.survey_id,
+                "species": obs.species,
+                "count": obs.count,
+                "behavior": obs.behavior,
+                "started_at": obs.started_at.isoformat() if obs.started_at else None,
+                "ended_at": obs.ended_at.isoformat() if obs.ended_at else None,
+                "notes": obs.notes,
+                "individual_id": (obs.individual_id or f"IND-{obs.id}"),
+            }
+        })
 
     # Polygon
     qg = db.query(ObservationPolygon, Observation).join(Observation, ObservationPolygon.observation_id == Observation.id)
@@ -139,26 +132,42 @@ def list_features(survey_id: int | None = None, db: Session = Depends(get_db)):
             geom = json.loads(pg.geometry)
         except Exception:
             continue
-        overlay = max(1, int(obs.count or 1))
-        for idx in range(1, overlay + 1):
-            feats.append({
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {
-                    "feature_table": "observation_polygons",
-                    "feature_id": pg.id,
-                    "observation_id": obs.id,
-                    "survey_id": obs.survey_id,
-                    "species": obs.species,
-                    "count": obs.count,
-                    "behavior": obs.behavior,
-                    "started_at": obs.started_at.isoformat() if obs.started_at else None,
-                    "ended_at": obs.ended_at.isoformat() if obs.ended_at else None,
-                    "notes": obs.notes,
-                    "individual_id": f"IND-{obs.id}-{idx}",
-                    "individual_index": idx,
-                    "overlay_count": overlay,
-                }
-            })
+        feats.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": {
+                "feature_table": "observation_polygons",
+                "feature_id": pg.id,
+                "observation_id": obs.id,
+                "survey_id": obs.survey_id,
+                "species": obs.species,
+                "count": obs.count,
+                "behavior": obs.behavior,
+                "started_at": obs.started_at.isoformat() if obs.started_at else None,
+                "ended_at": obs.ended_at.isoformat() if obs.ended_at else None,
+                "notes": obs.notes,
+                "individual_id": (obs.individual_id or f"IND-{obs.id}"),
+            }
+        })
 
     return {"type": "FeatureCollection", "features": feats}
+
+
+@router.delete("/feature")
+def delete_feature(feature_table: str, feature_id: int, db: Session = Depends(get_db)):
+    table = feature_table
+    if table not in {"flightlines", "observation_points", "observation_polygons"}:
+        raise HTTPException(status_code=400, detail="invalid feature_table")
+
+    model = {
+        "flightlines": FlightLine,
+        "observation_points": ObservationPoint,
+        "observation_polygons": ObservationPolygon,
+    }[table]
+
+    obj = db.get(model, feature_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="feature not found")
+    db.delete(obj)
+    db.commit()
+    return {"ok": True}

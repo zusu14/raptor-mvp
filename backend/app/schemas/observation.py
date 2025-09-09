@@ -6,6 +6,7 @@ from .commons import Behavior, GeoJSONFeature
 
 class ObservationIn(BaseModel):
     survey_id: int
+    individual_id: str | None = None
     species: str
     count: int
     behavior: Behavior
