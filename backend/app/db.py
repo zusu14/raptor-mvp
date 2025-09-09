@@ -34,6 +34,8 @@ def init_db() -> None:
     import app.models.flightline  # noqa: F401
     import app.models.photo  # noqa: F401
     import app.models.photolink  # noqa: F401
+    import app.models.observation_point  # noqa: F401
+    import app.models.observation_polygon  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
 
