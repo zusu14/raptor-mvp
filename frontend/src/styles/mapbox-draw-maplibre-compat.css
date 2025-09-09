@@ -1,0 +1,18 @@
+/* Mapbox GL Draw x MapLibre GL control compatibility
+   MapLibre control corners disable pointer events by default and re-enable on
+   children with class .maplibregl-ctrl. Draw uses .mapboxgl-ctrl, so clicks
+   are swallowed unless we re-enable pointer events here. */
+
+.maplibregl-ctrl-top-left .mapboxgl-ctrl,
+.maplibregl-ctrl-top-right .mapboxgl-ctrl,
+.maplibregl-ctrl-bottom-left .mapboxgl-ctrl,
+.maplibregl-ctrl-bottom-right .mapboxgl-ctrl {
+  pointer-events: auto;
+}
+
+/* Optional: add some spacing similar to MapLibre defaults */
+.maplibregl-ctrl-top-left .mapboxgl-ctrl { margin: 10px 0 0 10px; }
+.maplibregl-ctrl-top-right .mapboxgl-ctrl { margin: 10px 10px 0 0; }
+.maplibregl-ctrl-bottom-left .mapboxgl-ctrl { margin: 0 0 10px 10px; }
+.maplibregl-ctrl-bottom-right .mapboxgl-ctrl { margin: 0 10px 10px 0; }
+
