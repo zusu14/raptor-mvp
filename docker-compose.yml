@@ -1,10 +1,26 @@
 # docker-compose.yml
 services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: raptor
+      POSTGRES_USER: raptor
+      POSTGRES_PASSWORD: raptor
+    ports:
+      - "5432:5432" # 開発用にホスト公開（任意）
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
   api:
     build: ./backend
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      # DATABASE_URL が無い場合のデフォルト。必要なら .env 側で上書き可能。
+      DATABASE_URL: postgresql+psycopg://raptor:raptor@db:5432/raptor
+    depends_on:
+      - db
     volumes:
       - ./backend/app:/app/app
       - ./data:/app/data
@@ -19,6 +35,18 @@ services:
       - ./frontend:/app
     command: sh -c "npm install && npm run dev -- --host"
 
+  pgadmin:
+    image: dpage/pgadmin4:8
+    ports:
+      - "5050:80"  # ブラウザから http://localhost:5050 でアクセス
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      - db
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+
   # 任意: MinIO（S3互換）。必要時だけ起動
   # minio:
   #   image: quay.io/minio/minio:RELEASE.2024-12-07T00-00-00Z
@@ -31,3 +59,7 @@ services:
   #     - "9001:9001"
   #   volumes:
   #     - ./data/minio:/data
+
+volumes:
+  pgdata:
+  pgadmin-data:

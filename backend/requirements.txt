@@ -12,3 +12,4 @@ pyproj>=3.6
 shapely>=2.0
 pyshp>=2.3
 docxtpl>=0.16
+psycopg[binary]>=3.1
