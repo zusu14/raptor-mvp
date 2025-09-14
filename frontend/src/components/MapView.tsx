@@ -9,6 +9,7 @@ import "../styles/mapbox-draw-maplibre-compat.css";
 import { GSI_STANDARD, GSI_CREDIT } from "../lib/gsi";
 import drawStyles from "../lib/drawStyles";
 import { api } from "../lib/api";
+import { useNavigate, useParams } from "react-router-dom";
 
 // …（中身はそのまま）…
 
@@ -28,7 +29,13 @@ export default function MapView() {
   const [exportBusy, setExportBusy] = useState<boolean>(false);
 
   // 入力フォーム状態
-  const [surveyId, setSurveyId] = useState<number>(1);
+  const nav = useNavigate();
+  const { surveyId: surveyIdParam } = useParams();
+  const surveyId = surveyIdParam ? parseInt(surveyIdParam, 10) : null;
+  const [surveyName, setSurveyName] = useState<string>("");
+
+  // 可視状態の永続化キー（ブラウザlocalStorageに保存）
+  const visibilityKey = (sid: number) => `raptor:visibility:hiddenIndividuals:survey:${sid}`;
   const [species, setSpecies] = useState<string>("");
   const [count, setCount] = useState<number>(1);
   const [behavior, setBehavior] = useState<"flight" | "circle" | "rest">("flight");
@@ -94,9 +101,69 @@ export default function MapView() {
     return () => map.remove();
   }, []);
 
+  // 調査情報の取得（名称表示や存在確認）
+  useEffect(() => {
+    (async () => {
+      if (!surveyId || Number.isNaN(surveyId)) {
+        nav("/surveys", { replace: true });
+        return;
+      }
+      try {
+        const res = await api.get(`/surveys/${surveyId}`);
+        setSurveyName(res?.data?.name || "");
+        // 選択直後に飛翔データ等を再読込（地図準備は別effectで保障）
+        await loadSaved();
+      } catch (e) {
+        // 存在しない → 一覧へ戻す
+        nav("/surveys", { replace: true });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surveyId]);
+
+  // 調査切替時にビュー状態を初期化し、明示的に保存レイヤをクリア
+  useEffect(() => {
+    const map = mapRef.current;
+    // UI状態のリセット（前の調査のフィルタ/選択を持ち越さない）
+    // 個体IDの可視状態は調査ごとにlocalStorageから復元
+    if (surveyId) {
+      try {
+        const raw = localStorage.getItem(visibilityKey(surveyId));
+        const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+        setHiddenIndividualIds(Array.isArray(parsed) ? parsed : []);
+      } catch {
+        setHiddenIndividualIds([]);
+      }
+    } else {
+      setHiddenIndividualIds([]);
+    }
+    setExpandedIndividuals([]);
+    setSavedFeatures([]);
+    setExportSelectedIds([]);
+    if (map && map.getSource("saved")) {
+      const src: any = map.getSource("saved");
+      src.setData({ type: "FeatureCollection", features: [] });
+    }
+    // 直後の再読込は既存の[surveyId]依存effectとmapのload時処理で実施されます
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surveyId]);
+
+  // 非表示リストの変更を永続化（調査ごと）
+  useEffect(() => {
+    if (!surveyId) return;
+    try {
+      localStorage.setItem(visibilityKey(surveyId), JSON.stringify(hiddenIndividualIds));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenIndividualIds, surveyId]);
+
   // 保存処理
   async function handleSave() {
     setMsg("");
+    if (!surveyId) {
+      setMsg("調査が選択されていません。まず調査を選択してください。");
+      return;
+    }
     const draw = drawRef.current;
     if (!draw) return;
 
@@ -256,19 +323,43 @@ export default function MapView() {
     const map = mapRef.current;
     if (!map) return;
     const hidden = hiddenIndividualIds;
-    const notHiddenFilter: any = ["!", ["in", ["get", "individual_id"], ["literal", hidden]]];
-    const pointFilter: any = ["all", ["==", ["geometry-type"], "Point"], notHiddenFilter];
-    const lineFilter: any = ["all", ["==", ["geometry-type"], "LineString"], notHiddenFilter];
-    const polyFilter: any = ["all", ["==", ["geometry-type"], "Polygon"], notHiddenFilter];
+    // 2引数形式: ["in", needle, haystack(array)] を使用（MapLibre v4互換）
+    // hidden が空配列なら in(..., []) は常に false → not で常に true（全表示）
+    const notHiddenFilter: any = [
+      "!",
+      ["in", ["get", "individual_id"], ["literal", hidden]],
+    ];
+    const pointFilter: any = [
+      "all",
+      ["==", ["geometry-type"], "Point"],
+      notHiddenFilter,
+    ];
+    const lineFilter: any = [
+      "all",
+      ["==", ["geometry-type"], "LineString"],
+      notHiddenFilter,
+    ];
+    const polyFilter: any = [
+      "all",
+      ["==", ["geometry-type"], "Polygon"],
+      notHiddenFilter,
+    ];
     if (map.getLayer("saved-points")) map.setFilter("saved-points", pointFilter as any);
     if (map.getLayer("saved-lines")) map.setFilter("saved-lines", lineFilter as any);
     if (map.getLayer("saved-polygons-fill")) map.setFilter("saved-polygons-fill", polyFilter as any);
     if (map.getLayer("saved-polygons-outline")) map.setFilter("saved-polygons-outline", polyFilter as any);
   }
 
+  // 非表示IDの変更に追従してフィルタを適用（setStateの非同期反映に確実に追従）
+  useEffect(() => {
+    applySavedFilters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenIndividualIds]);
+
   async function loadSaved() {
     const map = mapRef.current;
     if (!map) return;
+    if (!surveyId) return;
     if (!map.isStyleLoaded()) {
       // wait for style load then retry once
       map.once("load", () => {
@@ -364,7 +455,12 @@ export default function MapView() {
           fontSize: 14,
         }}
       >
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>観察入力</div>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontWeight: 600 }}>観察入力</div>
+          <div style={{ marginLeft: "auto", fontSize: 12, color: surveyId ? "#333" : "#b00" }}>
+            {surveyId ? `対象: ${surveyName || "(名称取得中)"} (ID: ${surveyId})` : "調査未選択"}
+          </div>
+        </div>
           <div style={{ display: "grid", gap: 8 }}>
           {/* 保存済みデータパネル */}
           <div style={{ border: "1px solid #ddd", borderRadius: 6 }}>
@@ -425,7 +521,6 @@ export default function MapView() {
                                   if (hidden) set.delete(id); else set.add(id);
                                   return Array.from(set);
                                 });
-                                setTimeout(applySavedFilters, 0);
                               }}
                               style={{ width: 28 }}
                             >
@@ -576,8 +671,9 @@ export default function MapView() {
                   </div>
                 )}
                 <button
-                  disabled={exportBusy}
+                  disabled={exportBusy || !surveyId}
                   onClick={async () => {
+                    if (!surveyId) return;
                     try {
                       setExportBusy(true);
                       // 個体IDの決定
@@ -661,17 +757,13 @@ export default function MapView() {
               />
               面
             </label>
-            <button onClick={loadSaved} style={{ marginLeft: "auto" }}>再読込</button>
+            <button onClick={loadSaved} style={{ marginLeft: "auto" }} disabled={!surveyId}>再読込</button>
           </div>
-          <label>
-            Survey ID
-            <input
-              type="number"
-              value={surveyId}
-              onChange={(e) => setSurveyId(parseInt(e.target.value || "1", 10))}
-              style={{ width: "100%" }}
-            />
-          </label>
+          {!surveyId && (
+            <div style={{ color: "#b00", marginTop: 6 }}>
+              調査が選択されていません。「調査を変更」から選択してください。
+            </div>
+          )}
           <label>
             種名
             <input
@@ -757,7 +849,7 @@ export default function MapView() {
               style={{ width: "100%" }}
             />
           </label>
-          <button onClick={handleSave} disabled={busy}>
+          <button onClick={handleSave} disabled={busy || !surveyId}>
             {busy ? "保存中..." : "保存"}
           </button>
           <label>
@@ -773,6 +865,9 @@ export default function MapView() {
           )}
           <div style={{ color: "#555" }}>
             図形は「点・線・面」いずれでも可。選択中があればそれを保存、なければ最後に描画したものを保存します。
+          </div>
+          <div style={{ display: "flex", marginTop: 8 }}>
+            <button onClick={() => nav("/surveys")} style={{ marginLeft: "auto" }}>一覧に戻る</button>
           </div>
         </div>
       </div>
