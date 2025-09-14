@@ -1,9 +1,10 @@
 # backend/app/api/routers/export.py
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pathlib import Path
 from sqlalchemy.orm import Session
 from datetime import datetime
 import json
+import tempfile
 
 from app.db import get_db
 from app.models.observation import Observation
@@ -77,14 +78,14 @@ def make_shp(
     for pg, obs in qg.all():
         add_feat("Polygon", pg.geometry, obs)
 
-    # 出力先: Docker(/app/data) または ローカル(<repo>/data)
-    _container_data = Path("/app/data")
-    if _container_data.exists():
-        base = _container_data
-    else:
-        repo_root = Path(__file__).resolve().parents[4]
-        base = repo_root / "data"
-    out = base / "exports" / f"survey_{survey_id}.zip"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    export_grouped_shapefiles(grouped, out, target_epsg, encoding)
-    return {"download": f"/data/exports/{out.name}"}
+    # 一時ディレクトリにZIPを作成し、メモリに読み込んで返す（サーバ上に残さない）
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / f"survey_{survey_id}.zip"
+        export_grouped_shapefiles(grouped, out, target_epsg, encoding)
+        data = out.read_bytes()
+    filename = f"survey_{survey_id}.zip"
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{filename}\"",
+        "Content-Type": "application/zip",
+    }
+    return Response(content=data, media_type="application/zip", headers=headers)

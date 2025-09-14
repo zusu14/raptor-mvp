@@ -301,6 +301,46 @@ export default function MapView() {
     }
   }
 
+  // エクスポートZIPを保存ダイアログで保存（Chromium系ではFile System Access API、それ以外はダウンロードにフォールバック）
+  async function saveZipWithDialog(zipBlob: Blob, suggestedName: string) {
+    const anyWin: any = window as any;
+    try {
+      if (typeof anyWin.showSaveFilePicker === "function") {
+        const handle = await anyWin.showSaveFilePicker({
+          suggestedName,
+          types: [
+            { description: "ZIP file", accept: { "application/zip": [".zip"] } },
+          ],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(zipBlob);
+        await writable.close();
+        return;
+      }
+    } catch (e) {
+      // ユーザーがダイアログをキャンセルした場合はフォールバックしないで終了
+      const name = (e as any)?.name || "";
+      const msg = (e as any)?.message || "";
+      if (name === "AbortError" || /abort|cancel/i.test(msg)) {
+        return; // 何もしない（再度ポップアップを出さない）
+      }
+      // それ以外の例外はフォールバックへ
+    }
+    // フォールバック: 通常ダウンロード（ブラウザ設定により保存ダイアログが出る場合あり）
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = suggestedName || "export.zip";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 0);
+  }
+
+  
+
   // surveyId 変更時に保存レイヤを再読込
   useEffect(() => {
     loadSaved();
@@ -485,6 +525,7 @@ export default function MapView() {
                     </select>
                   </label>
                 </div>
+                
                 <label>
                   <input
                     type="checkbox"
@@ -556,12 +597,18 @@ export default function MapView() {
                         encoding: exportEncoding,
                       };
                       if (ids && ids.length) params.individual_ids = ids.join(",");
-                      const res = await api.post("/export/shapefile", null, { params });
-                      const dl = res?.data?.download as string | undefined;
-                      if (dl) {
-                        const url = `${api.defaults.baseURL}${dl}`;
-                        window.open(url, "_blank");
-                      }
+                      const res = await api.post(
+                        "/export/shapefile",
+                        null,
+                        { params, responseType: "blob" }
+                      );
+                      // ファイル名はContent-Dispositionから取得（無ければ既定）
+                      const cd = (res.headers as any)["content-disposition"] || "";
+                      let fname = `survey_${surveyId}.zip`;
+                      const m = /filename="?([^";]+)"?/i.exec(cd);
+                      if (m && m[1]) fname = m[1];
+                      const blob = new Blob([res.data], { type: "application/zip" });
+                      await saveZipWithDialog(blob, fname);
                     } catch (e: any) {
                       alert(`エクスポートに失敗しました: ${e?.response?.data?.detail || e.message}`);
                     } finally {
