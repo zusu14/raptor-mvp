@@ -16,6 +16,7 @@ import { useNavigate, useParams } from "react-router-dom";
 export default function MapView() {
   const ref = useRef<HTMLDivElement>(null);
   const drawRef = useRef<any>(null);
+  const navCtrlRef = useRef<maplibregl.NavigationControl | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [savedFeatures, setSavedFeatures] = useState<any[]>([]);
   const [hiddenIndividualIds, setHiddenIndividualIds] = useState<string[]>([]);
@@ -27,6 +28,13 @@ export default function MapView() {
   const [exportVisibleOnly, setExportVisibleOnly] = useState<boolean>(true);
   const [exportSelectedIds, setExportSelectedIds] = useState<string[]>([]);
   const [exportBusy, setExportBusy] = useState<boolean>(false);
+  const [activeDrawMode, setActiveDrawMode] = useState<string>('simple_select');
+  const [stickyDrawMode, setStickyDrawMode] = useState<string | null>(null); // draw_point/line_string/polygon or null
+  const stickyDrawModeRef = useRef<string | null>(null);
+  const [palettePos, setPalettePos] = useState<{x:number,y:number}>(() => {
+    try { const raw = localStorage.getItem('raptor:ui:drawPalettePos'); if (raw) { const v = JSON.parse(raw); if (typeof v?.x==='number' && typeof v?.y==='number') return v; } } catch {}
+    return { x: 12, y: 80 };
+  });
 
   // 入力フォーム状態
   const nav = useNavigate();
@@ -45,6 +53,17 @@ export default function MapView() {
   const [individualId, setIndividualId] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
   const [msg, setMsg] = useState<string>("");
+  // UI 設定（永続化）
+  const [panelVisible, setPanelVisible] = useState<boolean>(() => {
+    try { const raw = localStorage.getItem("raptor:ui:panelVisible"); return raw ? JSON.parse(raw) : true; } catch { return true; }
+  });
+  const [panelSide, setPanelSide] = useState<"left"|"right">(() => {
+    try { const raw = localStorage.getItem("raptor:ui:panelSide"); return raw === 'left' ? 'left' : 'right'; } catch { return 'right'; }
+  });
+  const [controlsPos, setControlsPos] = useState<"top-left"|"top-right"|"bottom-left"|"bottom-right">(() => {
+    try { const raw = localStorage.getItem("raptor:ui:controlsPos"); if (raw === 'top-right' || raw === 'bottom-left' || raw === 'bottom-right') return raw as any; } catch {}
+    return 'top-left';
+  });
   useEffect(() => {
     if (!ref.current) return;
     const map = new maplibregl.Map({
@@ -61,6 +80,7 @@ export default function MapView() {
         },
         layers: [{ id: "gsi", type: "raster", source: "gsi" }],
       },
+      attributionControl: false,
       center: [139.76, 35.68],
       zoom: 12,
     });
@@ -70,12 +90,29 @@ export default function MapView() {
       displayControlsDefault: false,
       modes,
       styles: drawStyles,
-      controls: { point: true, line_string: true, polygon: true, trash: true },
+      controls: {},
     } as any);
     // Debug log removed
-    map.addControl(draw, "top-left");
+    map.addControl(draw, controlsPos);
     drawRef.current = draw;
-    map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+    const nav = new maplibregl.NavigationControl();
+    map.addControl(nav, controlsPos);
+    navCtrlRef.current = nav;
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
+    // 現在地（追尾＋向き表示）コントロールを追加
+    try {
+      const geo = new (maplibregl as any).GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: true,
+        showUserHeading: true,
+        fitBoundsOptions: { maxZoom: 16 },
+      } as any);
+      // ズームコントロールと被らない側に配置
+      const geoPos = controlsPos.startsWith('bottom-')
+        ? (controlsPos.endsWith('right') ? 'bottom-left' : 'bottom-right')
+        : 'bottom-right';
+      map.addControl(geo as any, geoPos as any);
+    } catch {}
     mapRef.current = map;
 
     // 保存レイヤを用意（スタイルロード後）
@@ -90,6 +127,25 @@ export default function MapView() {
       });
     }
 
+    // Drawモード変更を検知してUIに反映
+    // 連続作成: Drawが作成完了後にsimple_selectへ戻しても、stickyが有効なら即座に同モードへ復帰
+    map.on('draw.modechange', (e: any) => {
+      const mode = e?.mode || 'simple_select';
+      setActiveDrawMode(mode);
+      const sticky = stickyDrawModeRef.current;
+      if (sticky && mode === 'simple_select') {
+        setTimeout(() => {
+          try {
+            const s = stickyDrawModeRef.current;
+            if (s) {
+              draw.changeMode(s as any);
+              setActiveDrawMode(s as any);
+            }
+          } catch {}
+        }, 0);
+      }
+    });
+
     // 地図PNGキャプチャ（凡例・クレジット焼き込み）
     (window as any).captureMap = async () => {
       const canvas = map.getCanvas();
@@ -100,6 +156,38 @@ export default function MapView() {
 
     return () => map.remove();
   }, []);
+
+  // UI設定の永続化
+  useEffect(() => { try { localStorage.setItem("raptor:ui:panelVisible", JSON.stringify(panelVisible)); } catch {} }, [panelVisible]);
+  useEffect(() => { try { localStorage.setItem("raptor:ui:panelSide", panelSide); } catch {} }, [panelSide]);
+  useEffect(() => {
+    try { localStorage.setItem("raptor:ui:controlsPos", controlsPos); } catch {}
+    const map = mapRef.current;
+    if (!map) return;
+    try { if (drawRef.current) map.removeControl(drawRef.current); } catch {}
+    try { if (navCtrlRef.current) map.removeControl(navCtrlRef.current as any); } catch {}
+    try {
+      if (drawRef.current) map.addControl(drawRef.current, controlsPos);
+      if (navCtrlRef.current) map.addControl(navCtrlRef.current, controlsPos);
+    } catch {}
+  }, [controlsPos]);
+
+  // パレット位置の永続化
+  useEffect(() => {
+    try { localStorage.setItem('raptor:ui:drawPalettePos', JSON.stringify(palettePos)); } catch {}
+  }, [palettePos]);
+
+  // stickyモードの参照を常に最新に
+  useEffect(() => {
+    stickyDrawModeRef.current = stickyDrawMode;
+  }, [stickyDrawMode]);
+
+  // スナックバー: メッセージの自動クローズ
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(""), 3000);
+    return () => clearTimeout(t);
+  }, [msg]);
 
   // 調査情報の取得（名称表示や存在確認）
   useEffect(() => {
@@ -244,6 +332,10 @@ export default function MapView() {
     const map = mapRef.current;
     if (!map) return;
     if (!map.isStyleLoaded()) return; // guard until style is fully loaded
+    // Drawのレイヤより下に"saved"レイヤを配置することで、描画操作のヒットテストを妨げない
+    const layers = map.getStyle()?.layers || [] as any[];
+    const drawLayer = layers.find((l:any)=> String(l.id||'').startsWith('gl-draw-'));
+    const beforeId = drawLayer ? drawLayer.id : undefined;
     if (!map.getSource("saved")) {
       map.addSource("saved", {
         type: "geojson",
@@ -261,7 +353,7 @@ export default function MapView() {
             "fill-color": "#29b6f6",
             "fill-opacity": 0.2,
           },
-        } as any);
+        } as any, beforeId);
       }
       // Polygons (outline)
       if (!map.getLayer("saved-polygons-outline")) {
@@ -274,7 +366,7 @@ export default function MapView() {
             "line-color": "#0288d1",
             "line-width": 2,
           },
-        } as any);
+        } as any, beforeId);
       }
       // Lines
       if (!map.getLayer("saved-lines")) {
@@ -287,7 +379,7 @@ export default function MapView() {
             "line-color": "#43a047",
             "line-width": 3,
           },
-        } as any);
+        } as any, beforeId);
       }
       // Points
       if (!map.getLayer("saved-points")) {
@@ -302,7 +394,7 @@ export default function MapView() {
             "circle-stroke-color": "#d84315",
             "circle-stroke-width": 1,
           },
-        } as any);
+        } as any, beforeId);
       }
     }
 
@@ -355,6 +447,47 @@ export default function MapView() {
     applySavedFilters();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenIndividualIds]);
+
+  // 個体IDの全図形へズーム
+  function focusIndividual(id: string) {
+    const feats = (savedFeatures || []).filter((f: any) => f?.properties?.individual_id === id);
+    const map = mapRef.current;
+    if (!map || feats.length === 0) return;
+    let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+    const eat = (x: number, y: number) => {
+      if (x < minx) minx = x; if (y < miny) miny = y;
+      if (x > maxx) maxx = x; if (y > maxy) maxy = y;
+    };
+    for (const f of feats) {
+      const g = f?.geometry;
+      if (!g) continue;
+      if (g.type === "Point") {
+        const [x, y] = g.coordinates || [];
+        if (typeof x === "number" && typeof y === "number") eat(x, y);
+      } else if (g.type === "LineString") {
+        for (const [x, y] of g.coordinates || []) eat(x, y);
+      } else if (g.type === "Polygon") {
+        for (const ring of g.coordinates || []) for (const [x, y] of ring) eat(x, y);
+      }
+    }
+    if (minx === Infinity) return;
+    map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 40, duration: 600 });
+  }
+
+  // 現在地へ移動
+  function flyToCurrentLocation() {
+    if (!navigator.geolocation) { setMsg("位置情報が利用できません"); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { longitude, latitude } = pos.coords;
+        const map = mapRef.current;
+        if (!map) return;
+        map.flyTo({ center: [longitude, latitude], zoom: Math.max(map.getZoom(), 14), duration: 800 });
+      },
+      () => setMsg("現在地の取得に失敗しました"),
+      { enableHighAccuracy: true, timeout: 5000 }
+    );
+  }
 
   async function loadSaved() {
     const map = mapRef.current;
@@ -430,6 +563,35 @@ export default function MapView() {
     }, 0);
   }
 
+  // パレット位置を画面内に収める
+  function clampToViewport(x: number, y: number) {
+    const pad = 8;
+    const w = window.innerWidth || 1024;
+    const h = window.innerHeight || 768;
+    const pw = 280; // パレット概算幅
+    const ph = 56;  // パレット概算高さ
+    const nx = Math.max(pad, Math.min(w - pw - pad, x));
+    const ny = Math.max(pad, Math.min(h - ph - pad, y));
+    return { x: nx, y: ny };
+  }
+
+  // ボタンのトグル挙動: 同じボタンを再押下で選択（simple_select）に戻す
+  function toggleDrawMode(mode: 'draw_point'|'draw_line_string'|'draw_polygon') {
+    const draw = drawRef.current as any;
+    if (!draw) return;
+    if (activeDrawMode === mode) {
+      setStickyDrawMode(null);
+      stickyDrawModeRef.current = null;
+      setActiveDrawMode('simple_select');
+      try { draw.changeMode('simple_select'); } catch {}
+    } else {
+      setStickyDrawMode(mode);
+      stickyDrawModeRef.current = mode;
+      setActiveDrawMode(mode);
+      try { draw.changeMode(mode); } catch {}
+    }
+  }
+
   
 
   // surveyId 変更時に保存レイヤを再読込
@@ -438,29 +600,131 @@ export default function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surveyId]);
 
+  // パレット用コンポーネント（ローカル）
+  function DrawPalette(props: { x:number, y:number, active:string, onDrag:(x:number,y:number)=>void, onPoint:()=>void, onLine:()=>void, onPolygon:()=>void, onTrash:()=>void }){
+    const pRef = useRef<HTMLDivElement>(null);
+    const posRef = useRef({ x: props.x, y: props.y });
+    const draggingRef = useRef(false);
+    const startRef = useRef({ sx:0, sy:0, ox:0, oy:0 });
+    useEffect(() => { posRef.current = { x: props.x, y: props.y }; }, [props.x, props.y]);
+
+    const disableMapInteractions = () => {
+      const m = mapRef.current as any; if(!m) return;
+      try { m.dragPan?.disable(); } catch {}
+      try { m.scrollZoom?.disable(); } catch {}
+      try { m.boxZoom?.disable(); } catch {}
+      try { m.doubleClickZoom?.disable(); } catch {}
+      try { m.touchZoomRotate?.disable(); } catch {}
+    };
+    const enableMapInteractions = () => {
+      const m = mapRef.current as any; if(!m) return;
+      try { m.dragPan?.enable(); } catch {}
+      try { m.scrollZoom?.enable(); } catch {}
+      try { m.boxZoom?.enable(); } catch {}
+      try { m.doubleClickZoom?.enable(); } catch {}
+      try { m.touchZoomRotate?.enable(); } catch {}
+    };
+
+    const onPointerDown = (e: React.PointerEvent) => {
+      draggingRef.current = true;
+      startRef.current.sx = e.clientX;
+      startRef.current.sy = e.clientY;
+      startRef.current.ox = posRef.current.x;
+      startRef.current.oy = posRef.current.y;
+      (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+      disableMapInteractions();
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const onPointerMove = (e: React.PointerEvent) => {
+      if(!draggingRef.current) return;
+      const { sx, sy, ox, oy } = startRef.current;
+      const nx = ox + (e.clientX - sx);
+      const ny = oy + (e.clientY - sy);
+      props.onDrag(nx, ny);
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const onPointerUp = (e: React.PointerEvent) => {
+      draggingRef.current = false;
+      try { (e.currentTarget as any).releasePointerCapture?.(e.pointerId); } catch {}
+      enableMapInteractions();
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const Btn = ( {label, on, onClick}:{label:string, on:boolean, onClick:()=>void} ) => (
+      <button onClick={onClick} style={{ padding:'8px 10px', borderRadius:6, border:'1px solid #ddd', background:on?'#1976d2':'#fff', color:on?'#fff':'#333' }}>{label}</button>
+    );
+    return (
+      <div
+        ref={pRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        style={{ position:'absolute', left: props.x, top: props.y, background:'#fff', border:'1px solid #ddd', borderRadius:10, boxShadow:'0 4px 12px rgba(0,0,0,0.15)', padding:8, display:'flex', gap:6, alignItems:'center', zIndex:1000, touchAction:'none', cursor:'move' }}
+      >
+        <div className="drag-handle" title="ドラッグで移動" style={{ cursor:'move', padding:'6px 6px' }}>≡</div>
+        <Btn label="点" on={props.active==='draw_point'} onClick={props.onPoint} />
+        <Btn label="線" on={props.active==='draw_line_string'} onClick={props.onLine} />
+        <Btn label="面" on={props.active==='draw_polygon'} onClick={props.onPolygon} />
+        <button onClick={props.onTrash} title="削除" style={{ padding:'8px 10px', borderRadius:6, border:'1px solid #ddd', background:'#fff' }}>🗑</button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={ref} style={{ width: "100%", height: "100%" }} />
-      {/* 入力パネル */}
+      { /* フローティングパレットは無効化（ドック型に切替） */ }
+      {/* 入力パネル（表示切替・左右切替対応） */}
       <div
         style={{
           position: "absolute",
-          right: 12,
           top: 12,
+          [panelSide]: 12 as any,
           width: 320,
           padding: 12,
           background: "rgba(255,255,255,0.95)",
           borderRadius: 8,
           boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
           fontSize: 14,
+          transform: panelVisible ? 'translateX(0)' : (panelSide==='right' ? 'translateX(360px)' : 'translateX(-360px)'),
+          transition: 'transform 200ms ease',
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 8, gap: 8 }}>
           <div style={{ fontWeight: 600 }}>観察入力</div>
-          <div style={{ marginLeft: "auto", fontSize: 12, color: surveyId ? "#333" : "#b00" }}>
+          <button
+            title="パネル位置切替"
+            onClick={() => setPanelSide((s) => (s === 'right' ? 'left' : 'right'))}
+            style={{ marginLeft: 'auto', padding: '4px 8px', borderRadius: 6, border: '1px solid #ddd', background: '#fff' }}>
+            ↔
+          </button>
+          <div style={{ fontSize: 12, color: surveyId ? "#333" : "#b00" }}>
             {surveyId ? `対象: ${surveyName || "(名称取得中)"} (ID: ${surveyId})` : "調査未選択"}
           </div>
         </div>
+          {/* 地物作成ツールバー（ドック：パネル上部に固定） */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '4px 0 8px 0' }}>
+            <button
+              onClick={()=> toggleDrawMode('draw_point')}
+              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_point' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_point' ? '#fff' : '#333' }}
+            >点</button>
+            <button
+              onClick={()=> toggleDrawMode('draw_line_string')}
+              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_line_string' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_line_string' ? '#fff' : '#333' }}
+            >線</button>
+            <button
+              onClick={()=> toggleDrawMode('draw_polygon')}
+              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_polygon' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_polygon' ? '#fff' : '#333' }}
+            >面</button>
+            <button
+              onClick={()=> drawRef.current?.trash()}
+              title="削除"
+              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background:'#fff' }}
+            >🗑</button>
+          </div>
+
           <div style={{ display: "grid", gap: 8 }}>
           {/* 保存済みデータパネル */}
           <div style={{ border: "1px solid #ddd", borderRadius: 6 }}>
@@ -539,7 +803,9 @@ export default function MapView() {
                             >
                               {expanded ? "▾" : "▸"}
                             </button>
-                            <div style={{ marginLeft: 8, fontFamily: "monospace" }}>{id}</div>
+                            <div style={{ marginLeft: 8, fontFamily: "monospace", cursor: "pointer" }} onClick={() => focusIndividual(id)} title="フォーカス">
+                              {id}
+                            </div>
                             <div style={{ marginLeft: 8, color: "#555" }}>{species}</div>
                             <div style={{ marginLeft: "auto", color: "#999" }}>{groups[id].length}件</div>
                           </div>
@@ -757,7 +1023,7 @@ export default function MapView() {
               />
               面
             </label>
-            <button onClick={loadSaved} style={{ marginLeft: "auto" }} disabled={!surveyId}>再読込</button>
+            {/* 再読込ボタンは自動同期方針のため削除 */}
           </div>
           {!surveyId && (
             <div style={{ color: "#b00", marginTop: 6 }}>
@@ -869,6 +1135,43 @@ export default function MapView() {
           {/* 一覧に戻るボタンはヘッダに統一し、パネル内からは削除 */}
         </div>
       </div>
+      {/* パネルハンドル（Googleマップ風の三角/山形） */}
+      <div
+        onClick={() => setPanelVisible((v) => !v)}
+        title={panelVisible ? 'パネルを閉じる' : 'パネルを開く'}
+        style={{
+          position: 'absolute',
+          top: '50%',
+          transform: 'translateY(-50%)',
+          [panelSide]: panelVisible ? (12 + 320 + 8) : 12 as any,
+          width: 28,
+          height: 100,
+          borderRadius: 8,
+          background: '#fff',
+          border: '1px solid #ddd',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          userSelect: 'none',
+          zIndex: 5,
+        }}
+      >
+        <span style={{ fontSize: 18 }}>
+          {panelSide === 'right' ? (panelVisible ? '▶' : '◀') : (panelVisible ? '◀' : '▶')}
+        </span>
+      </div>
+
+      {/* GeolocateControl を採用したため、独自の現在地ボタンは削除 */}
+      
+
+      {/* スナックバー */}
+      {msg && (
+        <div style={{ position: "absolute", left: 12, bottom: 12, background: "rgba(0,0,0,0.8)", color: "#fff", padding: "8px 12px", borderRadius: 8 }}>
+          {msg}
+        </div>
+      )}
     </div>
   );
 }
