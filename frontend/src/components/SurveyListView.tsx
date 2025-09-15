@@ -23,6 +23,7 @@ export default function SurveyListView({}: Props) {
   const [editId, setEditId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editDate, setEditDate] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -122,66 +123,192 @@ export default function SurveyListView({}: Props) {
 
   return (
     <div style={{ display: "grid", gap: 12, width: "100%", height: "100%", padding: 16 }}>
-      <div style={{ fontSize: 18, fontWeight: 700 }}>調査の選択</div>
-      <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>新規作成</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            placeholder="調査名（必須）"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            style={{ minWidth: 240 }}
-          />
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          <button onClick={create} disabled={busy || !name.trim()}>
-            作成して選択
-          </button>
-        </div>
-        {error && <div style={{ color: "#c00", marginTop: 6 }}>{error}</div>}
-      </div>
-
+      {/* 一覧 */}
       <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, minHeight: 160 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>既存の調査</div>
         {loading ? (
           <div>読み込み中...</div>
         ) : items.length === 0 ? (
-          <div style={{ color: "#666" }}>まだ調査はありません。上で作成してください。</div>
+          <div style={{ color: "#666", display: "grid", placeItems: "center", padding: 24 }}>
+            <div>まだ調査はありません。上の「＋ 新規作成」から追加してください。</div>
+          </div>
         ) : (
-          <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ display: "grid", gap: 8 }}>
             {items.map((s) => {
               const isEdit = editId === s.id;
               return (
-                <div key={s.id} style={{ display: "flex", alignItems: "center", border: "1px solid #eee", borderRadius: 6, padding: 8, gap: 8 }}>
+                <div
+                  key={s.id}
+                  onClick={() => !isEdit && select(s)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    border: "1px solid #eee",
+                    borderRadius: 10,
+                    padding: 12,
+                    gap: 12,
+                    minHeight: 56,
+                    cursor: isEdit ? "default" : "pointer",
+                  }}
+                  title={isEdit ? undefined : "開く（地図）"}
+                >
                   {isEdit ? (
                     <>
-                      <input value={editName} onChange={(e) => setEditName(e.target.value)} style={{ minWidth: 200 }} />
-                      <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
+                      <input
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        style={{ minWidth: 200, minHeight: 44, padding: "8px 10px" }}
+                      />
+                      <input
+                        type="date"
+                        value={editDate}
+                        onChange={(e) => setEditDate(e.target.value)}
+                        style={{ minHeight: 44, padding: "8px 10px" }}
+                      />
                     </>
                   ) : (
-                    <>
-                      <div style={{ fontWeight: 600 }}>{s.name}</div>
-                      <div style={{ color: "#666" }}>{s.date}</div>
-                    </>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16 }}>{s.name}</div>
+                      <div style={{ color: "#666", fontSize: 14 }}>{s.date}</div>
+                    </div>
                   )}
-                  <div style={{ marginLeft: "auto", color: "#999" }}>ID: {s.id}</div>
-                  {!isEdit ? (
-                    <>
-                      <button onClick={() => select(s)}>選択</button>
-                      <button onClick={() => startEdit(s)}>編集</button>
-                      <button onClick={() => remove(s.id)} style={{ color: "#b00" }}>削除</button>
-                    </>
-                  ) : (
-                    <>
-                      <button onClick={() => saveEdit(s.id)} disabled={busy || !editName.trim()}>保存</button>
-                      <button onClick={cancelEdit}>キャンセル</button>
-                    </>
-                  )}
+                  <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: "#999", fontSize: 12, border: "1px solid #eee", borderRadius: 6, padding: "2px 6px" }}>ID: {s.id}</span>
+                    {!isEdit ? (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            select(s);
+                          }}
+                          style={{ minHeight: 44, padding: "8px 12px", fontWeight: 600 }}
+                        >
+                          開く（地図）
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEdit(s);
+                          }}
+                          style={{ minHeight: 44, padding: "8px 12px" }}
+                        >
+                          編集
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            remove(s.id);
+                          }}
+                          style={{ minHeight: 44, padding: "8px 12px", color: "#b00" }}
+                        >
+                          削除
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            saveEdit(s.id);
+                          }}
+                          disabled={busy || !editName.trim()}
+                          style={{ minHeight: 44, padding: "8px 12px" }}
+                        >
+                          保存
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            cancelEdit();
+                          }}
+                          style={{ minHeight: 44, padding: "8px 12px" }}
+                        >
+                          キャンセル
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* FAB: 新規作成 */}
+      <button
+        onClick={() => setCreateOpen(true)}
+        title="新規作成"
+        aria-label="新規作成"
+        style={{
+          position: "fixed",
+          right: 20,
+          bottom: 20,
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          background: "#1976d2",
+          color: "#fff",
+          fontSize: 24,
+          border: "none",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+        }}
+      >
+        ＋
+      </button>
+
+      {/* Bottom Sheet: 新規作成 */}
+      {createOpen && (
+        <div
+          onClick={() => setCreateOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "flex-end",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              background: "#fff",
+              borderTopLeftRadius: 16,
+              borderTopRightRadius: 16,
+              padding: 16,
+              boxShadow: "0 -6px 16px rgba(0,0,0,0.2)",
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>新規作成</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span>名称（必須）</span>
+                <input
+                  placeholder="例：9/20 現地調査"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  style={{ minHeight: 44, padding: "8px 10px" }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && name.trim() && !busy) create();
+                  }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span>日付（任意）</span>
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ minHeight: 44, padding: "8px 10px" }} />
+              </label>
+              {error && <div style={{ color: "#c00" }}>{error}</div>}
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <button onClick={create} disabled={busy || !name.trim()} style={{ minHeight: 44, padding: "10px 14px", fontWeight: 600 }}>
+                  作成して開く
+                </button>
+                <button onClick={() => setCreateOpen(false)} style={{ minHeight: 44, padding: "10px 14px" }}>キャンセル</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
