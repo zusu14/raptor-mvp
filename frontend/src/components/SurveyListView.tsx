@@ -178,15 +178,6 @@ export default function SurveyListView({}: Props) {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            select(s);
-                          }}
-                          style={{ minHeight: 44, padding: "8px 12px", fontWeight: 600 }}
-                        >
-                          開く（地図）
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
                             startEdit(s);
                           }}
                           style={{ minHeight: 44, padding: "8px 12px" }}

@@ -866,9 +866,7 @@ export default function MapView() {
           <div style={{ color: "#555" }}>
             図形は「点・線・面」いずれでも可。選択中があればそれを保存、なければ最後に描画したものを保存します。
           </div>
-          <div style={{ display: "flex", marginTop: 8 }}>
-            <button onClick={() => nav("/surveys")} style={{ marginLeft: "auto" }}>一覧に戻る</button>
-          </div>
+          {/* 一覧に戻るボタンはヘッダに統一し、パネル内からは削除 */}
         </div>
       </div>
     </div>

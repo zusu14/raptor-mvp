@@ -10,9 +10,11 @@ function Shell() {
     <div style={{ position: "fixed", inset: 0 }}>
       <div style={{ height: 48, display: "flex", alignItems: "center", padding: "0 12px", borderBottom: "1px solid #eee", background: "#fafafa" }}>
         <div style={{ fontWeight: 700 }}>Raptor MVP</div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button onClick={() => nav("/surveys")} disabled={loc.pathname.startsWith("/surveys")}>調査一覧</button>
-        </div>
+        {!loc.pathname.startsWith("/surveys") && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            <button onClick={() => nav("/surveys")}>調査一覧に戻る</button>
+          </div>
+        )}
       </div>
       <div style={{ position: "absolute", inset: "48px 0 0 0" }}>
         <Routes>
