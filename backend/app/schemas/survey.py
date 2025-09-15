@@ -17,3 +17,10 @@ class SurveyOut(BaseModel):
     date: dt.date
     observers: str
     area_bbox: Optional[Any] = None
+
+
+class SurveyUpdate(BaseModel):
+    name: Optional[str] = None
+    date: Optional[dt.date] = None
+    observers: Optional[str] = None
+    area_bbox: Optional[Any] = None
