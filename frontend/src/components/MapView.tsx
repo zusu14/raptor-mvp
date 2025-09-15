@@ -31,6 +31,15 @@ export default function MapView() {
   const [activeDrawMode, setActiveDrawMode] = useState<string>('simple_select');
   const [stickyDrawMode, setStickyDrawMode] = useState<string | null>(null); // draw_point/line_string/polygon or null
   const stickyDrawModeRef = useRef<string | null>(null);
+  const [freehandTarget, setFreehandTarget] = useState<'LineString'|'Polygon'|null>(null);
+  const freehandTargetRef = useRef<'LineString'|'Polygon'|null>(null);
+  // カスタム実装：フリーハンド「線」用（一部プラグインが常にPolygonを生成するため）
+  const customFHActiveRef = useRef(false);
+  const customFHCapturingRef = useRef(false);
+  const customFHFeatIdRef = useRef<string | null>(null);
+  const customFHTargetRef = useRef<'LineString'|'Polygon'|null>(null);
+  const customFHLastScreenRef = useRef<{x:number,y:number}|null>(null);
+  const PIXEL_TOL_SQ = 4; // 2px 相当（2*2）
   const [palettePos, setPalettePos] = useState<{x:number,y:number}>(() => {
     try { const raw = localStorage.getItem('raptor:ui:drawPalettePos'); if (raw) { const v = JSON.parse(raw); if (typeof v?.x==='number' && typeof v?.y==='number') return v; } } catch {}
     return { x: 12, y: 80 };
@@ -129,21 +138,109 @@ export default function MapView() {
 
     // Drawモード変更を検知してUIに反映
     // 連続作成: Drawが作成完了後にsimple_selectへ戻しても、stickyが有効なら即座に同モードへ復帰
+    // ヘルパ: フリーハンドのターゲットに応じた起動オプション
+    const freehandOpts = (tgt: 'LineString'|'Polygon'|null|undefined) => ({
+      // 代表的な実装が受け付ける可能性のあるキーを併記（未対応キーは無視される）
+      feature: tgt === 'Polygon' ? 'Polygon' : 'LineString',
+      line: tgt !== 'Polygon',
+      lineString: tgt !== 'Polygon',
+      polygon: tgt === 'Polygon',
+    });
+
     map.on('draw.modechange', (e: any) => {
       const mode = e?.mode || 'simple_select';
-      setActiveDrawMode(mode);
+      // 表示上のモード名（freehandはターゲット別に表示）
+      if (mode === 'draw_freehand') {
+        const tgt = freehandTargetRef.current;
+        setActiveDrawMode(tgt === 'Polygon' ? 'freehand_polygon' : 'freehand_line');
+      } else {
+        setActiveDrawMode(mode);
+      }
       const sticky = stickyDrawModeRef.current;
       if (sticky && mode === 'simple_select') {
         setTimeout(() => {
           try {
             const s = stickyDrawModeRef.current;
             if (s) {
-              draw.changeMode(s as any);
-              setActiveDrawMode(s as any);
+              if (s === 'draw_freehand') {
+                const tgt = freehandTargetRef.current;
+                if (tgt === 'LineString') {
+                  setActiveDrawMode('freehand_line');
+                  enableCustomFreehand('LineString');
+                } else if (tgt === 'Polygon') {
+                  setActiveDrawMode('freehand_polygon');
+                  enableCustomFreehand('Polygon');
+                }
+              } else {
+                draw.changeMode(s as any);
+                setActiveDrawMode(s as any);
+              }
             }
           } catch {}
         }, 0);
       }
+    });
+
+    // freehand作図直後に自動保存（属性が揃っている場合）
+    map.on('draw.create', async (e: any) => {
+      try {
+        const s = stickyDrawModeRef.current;
+        if (s === 'draw_freehand') {
+          const feat = (e && e.features && e.features[0]) || null;
+          if (!feat || !feat.geometry) return;
+          // カスタムfreehand（ライン/ポリゴン）で追加したものは対象外
+          try {
+            const src = feat?.properties?.source;
+            if (src === 'freehand_custom_line' || src === 'freehand_custom_polygon') return;
+          } catch {}
+          let geom = feat.geometry;
+          const tgt = freehandTargetRef.current;
+          if (tgt === 'Polygon') {
+            if (geom.type === 'LineString') {
+              const coords = (geom.coordinates || []).slice();
+              if (coords.length >= 3) {
+                // 閉じてポリゴン化
+                if (coords.length === 0 || (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1])) {
+                  coords.push(coords[0]);
+                }
+                geom = { type: 'Polygon', coordinates: [coords] } as any;
+              } else {
+                // 頂点不足は保存せず中断
+                return;
+              }
+            }
+          } else if (tgt === 'LineString') {
+            // 一部freehand実装はPolygonを返すことがある → LineStringへ矯正
+            if (geom.type === 'Polygon') {
+              let ring = (geom.coordinates && geom.coordinates[0]) || [];
+              if (ring.length >= 2) {
+                // 末尾が先頭と同じなら閉じ頂点を除去
+                const first = ring[0];
+                const last = ring[ring.length - 1];
+                if (first && last && first[0] === last[0] && first[1] === last[1]) {
+                  ring = ring.slice(0, -1);
+                }
+                geom = { type: 'LineString', coordinates: ring } as any;
+              } else {
+                return;
+              }
+            }
+          }
+          // 自動保存（成功しなかった場合は、描画中の図形をラインとして残す）
+          let saved = false;
+          try { saved = await saveGeometryAuto(geom); } catch {}
+          if (!saved && tgt === 'LineString') {
+            try {
+              // 画面上にラインを残す（Drawフィーチャとして再追加）
+              const added = draw.add({ type: 'Feature', geometry: geom, properties: { intended: 'LineString', source: 'freehand' } });
+              // 追加したラインを選択状態に
+              try { draw.changeMode('simple_select', { featureIds: added }); } catch {}
+            } catch {}
+          }
+          // 画面上のドラフトを削除してクリア
+          try { if (feat.id != null) draw.delete(String(feat.id)); } catch {}
+        }
+      } catch {}
     });
 
     // 地図PNGキャプチャ（凡例・クレジット焼き込み）
@@ -265,7 +362,25 @@ export default function MapView() {
       setMsg("図形がありません。点/線/面のいずれかを描画してください。");
       return;
     }
-    const gtype = feature.geometry?.type;
+    // freehand の線指定なのに Polygon が返ることがあるため、ここで最終的に LineString へ矯正
+    let geometry: any = feature.geometry;
+    if (geometry && geometry.type === 'Polygon') {
+      const wantLine = (activeDrawMode === 'freehand_line') || (stickyDrawModeRef.current === 'draw_freehand' && freehandTargetRef.current === 'LineString');
+      if (wantLine) {
+        try {
+          let ring = (geometry.coordinates && geometry.coordinates[0]) || [];
+          if (Array.isArray(ring) && ring.length >= 2) {
+            const first = ring[0];
+            const last = ring[ring.length - 1];
+            if (first && last && first[0] === last[0] && first[1] === last[1]) {
+              ring = ring.slice(0, -1);
+            }
+            geometry = { type: 'LineString', coordinates: ring } as any;
+          }
+        } catch {}
+      }
+    }
+    const gtype = geometry?.type;
     if (!["Point", "LineString", "Polygon"].includes(gtype)) {
       setMsg(`未対応の形状タイプです: ${gtype}`);
       return;
@@ -292,7 +407,7 @@ export default function MapView() {
       },
       feature: {
         type: "Feature",
-        geometry: feature.geometry,
+        geometry,
         properties: {},
       },
     };
@@ -319,6 +434,51 @@ export default function MapView() {
       setMsg(`保存に失敗しました: ${e?.response?.data?.detail || e.message}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // freehand作図後の自動保存用（属性が揃っている時のみ保存）
+  async function saveGeometryAuto(geometry: any): Promise<boolean> {
+    try {
+      if (!surveyId) return;
+      // 必須が未入力なら自動保存は行わない
+      if (!species || !count || !startedAt || !endedAt) return false;
+      // Polygon→LineString の保険（freehand線指定時）
+      if (geometry && geometry.type === 'Polygon' && (freehandTargetRef.current === 'LineString')) {
+        try {
+          let ring = (geometry.coordinates && geometry.coordinates[0]) || [];
+          if (Array.isArray(ring) && ring.length >= 2) {
+            const first = ring[0];
+            const last = ring[ring.length - 1];
+            if (first && last && first[0] === last[0] && first[1] === last[1]) {
+              ring = ring.slice(0, -1);
+            }
+            geometry = { type: 'LineString', coordinates: ring } as any;
+          }
+        } catch {}
+      }
+      const startedIso = new Date(startedAt).toISOString();
+      const endedIso = new Date(endedAt).toISOString();
+      const payload: any = {
+        observation: {
+          survey_id: surveyId,
+          individual_id: individualId || null,
+          species,
+          count,
+          behavior,
+          started_at: startedIso,
+          ended_at: endedIso,
+          notes,
+        },
+        feature: { type: 'Feature', geometry, properties: {} },
+      };
+      const res = await api.post("/observations/record", payload);
+      setMsg(`保存しました: observation_id=${res.data?.observation_id ?? ''}`);
+      await loadSaved();
+      return true;
+    } catch (e: any) {
+      setMsg(`保存に失敗しました: ${e?.response?.data?.detail || e?.message || e}`);
+      return false;
     }
   }
 
@@ -582,13 +742,227 @@ export default function MapView() {
     if (activeDrawMode === mode) {
       setStickyDrawMode(null);
       stickyDrawModeRef.current = null;
+      setFreehandTarget(null);
       setActiveDrawMode('simple_select');
       try { draw.changeMode('simple_select'); } catch {}
     } else {
       setStickyDrawMode(mode);
       stickyDrawModeRef.current = mode;
+      setFreehandTarget(null);
       setActiveDrawMode(mode);
       try { draw.changeMode(mode); } catch {}
+    }
+  }
+
+  function toggleFreehand(target: 'LineString'|'Polygon') {
+    const draw = drawRef.current as any;
+    if (!draw) return;
+    const currentIsFree = activeDrawMode === 'freehand_line' || activeDrawMode === 'freehand_polygon';
+    const want = target === 'Polygon' ? 'freehand_polygon' : 'freehand_line';
+    if (currentIsFree && ((target==='Polygon' && activeDrawMode==='freehand_polygon') || (target==='LineString' && activeDrawMode==='freehand_line'))) {
+      // トグルOFF → 選択
+      setStickyDrawMode(null);
+      stickyDrawModeRef.current = null;
+      setFreehandTarget(null);
+      freehandTargetRef.current = null;
+      setActiveDrawMode('simple_select');
+      try { draw.changeMode('simple_select'); } catch {}
+      // カスタム freehand を無効化
+      disableCustomFreehand();
+    } else {
+      setStickyDrawMode('draw_freehand');
+      stickyDrawModeRef.current = 'draw_freehand';
+      setFreehandTarget(target);
+      freehandTargetRef.current = target;
+      setActiveDrawMode(want);
+      // Line/Polygon 共にカスタム実装へ統一
+      enableCustomFreehand(target);
+    }
+  }
+
+  function enableCustomFreehand(target: 'LineString'|'Polygon') {
+    const map = mapRef.current as any;
+    const draw = drawRef.current as any;
+    if (!map || !draw) return;
+    customFHTargetRef.current = target;
+    if (customFHActiveRef.current) return;
+    customFHActiveRef.current = true;
+
+    const onDown = (e: any) => {
+      if (!customFHActiveRef.current) return;
+      customFHCapturingRef.current = true;
+      const p = e.lngLat;
+      const pt = e.point || (map && map.project ? map.project(p) : { x: 0, y: 0 });
+      customFHLastScreenRef.current = { x: pt.x, y: pt.y };
+      // 地図のパン/ズームを一時無効化
+      try { map.dragPan?.disable(); } catch {}
+      try { map.scrollZoom?.disable(); } catch {}
+      try { map.boxZoom?.disable(); } catch {}
+      try { map.doubleClickZoom?.disable(); } catch {}
+      try { map.touchZoomRotate?.disable(); } catch {}
+      const intended = customFHTargetRef.current || 'LineString';
+      const feat = {
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[p.lng, p.lat]] },
+        properties: { intended, source: intended === 'Polygon' ? 'freehand_custom_polygon' : 'freehand_custom_line' },
+      } as any;
+      try {
+        const ids = draw.add(feat);
+        customFHFeatIdRef.current = (ids && ids[0]) || null;
+        // 選択状態に
+        try { draw.changeMode('simple_select', { featureIds: ids }); } catch {}
+      } catch {}
+      // このイベントを他の操作に伝播させない
+      try { e.preventDefault?.(); } catch {}
+    };
+
+    const onMove = (e: any) => {
+      if (!customFHCapturingRef.current) return;
+      const id = customFHFeatIdRef.current;
+      if (!id) return;
+      const p = e.lngLat;
+      const pt = e.point || (map && map.project ? map.project(p) : { x: 0, y: 0 });
+      const lastPt = customFHLastScreenRef.current;
+      try {
+        const f = draw.get(id);
+        if (!f) return;
+        let coords = (f.geometry?.type === 'Polygon'
+          ? (f.geometry?.coordinates?.[0] || [])
+          : (f.geometry?.coordinates || [])
+        ).slice();
+
+        // Polygonの場合、前回のクローズ頂点（先頭と同じ座標が末尾にある）を一度取り除いてから追加する
+        if (coords.length >= 2) {
+          const first0 = coords[0];
+          const last0 = coords[coords.length - 1];
+          if (first0 && last0 && first0[0] === last0[0] && first0[1] === last0[1]) {
+            coords = coords.slice(0, -1);
+          }
+        }
+
+        // ピクセル間引き: 2px未満の移動は追加しない
+        if (lastPt) {
+          const dxp = (pt.x - lastPt.x);
+          const dyp = (pt.y - lastPt.y);
+          if ((dxp*dxp + dyp*dyp) < PIXEL_TOL_SQ) return;
+        }
+
+        coords.push([p.lng, p.lat]);
+
+        const intended = (f.properties?.intended || customFHTargetRef.current);
+        if (intended === 'Polygon') {
+          if (coords.length >= 3) {
+            const ring = coords.slice();
+            const first = ring[0];
+            const last = ring[ring.length - 1];
+            if (!(first && last && first[0] === last[0] && first[1] === last[1])) {
+              ring.push(first);
+            }
+            f.geometry = { type: 'Polygon', coordinates: [ring] } as any;
+          } else {
+            f.geometry = { type: 'LineString', coordinates: coords } as any;
+          }
+        } else {
+          f.geometry = { type: 'LineString', coordinates: coords } as any;
+        }
+        customFHLastScreenRef.current = { x: pt.x, y: pt.y };
+        draw.add(f); // 上書き用に再追加
+      } catch {}
+    };
+
+    const onUp = async (e: any) => {
+      if (!customFHCapturingRef.current) return;
+      customFHCapturingRef.current = false;
+      const id = customFHFeatIdRef.current;
+      customFHFeatIdRef.current = null;
+      customFHLastScreenRef.current = null;
+      let f: any = null;
+      try { f = id ? draw.get(id) : null; } catch {}
+      const intended = f?.properties?.intended || customFHTargetRef.current;
+      // 最終確定形状を用意
+      let finalGeom: any = null;
+      try {
+        if (f && f.geometry) {
+          if (intended === 'Polygon') {
+            // 既にPolygon化されていれば外輪を取り出し、末尾のクローズ頂点があれば取り除いてから再クローズ
+            let coords = (f.geometry.type === 'Polygon') ? (f.geometry.coordinates?.[0] || []) : (f.geometry.coordinates || []);
+            if (coords.length >= 3) {
+              if (coords.length >= 2) {
+                const first0 = coords[0];
+                const last0 = coords[coords.length - 1];
+                if (first0 && last0 && first0[0] === last0[0] && first0[1] === last0[1]) {
+                  coords = coords.slice(0, -1);
+                }
+              }
+              const ring = coords.slice();
+              const first = ring[0];
+              const last = ring[ring.length - 1];
+              if (!(first && last && first[0] === last[0] && first[1] === last[1])) {
+                ring.push(first);
+              }
+              finalGeom = { type: 'Polygon', coordinates: [ring] } as any;
+            }
+          } else {
+            // LineString（Polygonだったら外輪のみを取得・クローズ点は除去）
+            let coords = (f.geometry.type === 'Polygon') ? (f.geometry.coordinates?.[0] || []) : (f.geometry.coordinates || []);
+            if (coords.length >= 2) {
+              if (coords.length >= 2) {
+                const first0 = coords[0];
+                const last0 = coords[coords.length - 1];
+                if (first0 && last0 && first0[0] === last0[0] && first0[1] === last0[1]) {
+                  coords = coords.slice(0, -1);
+                }
+              }
+              finalGeom = { type: 'LineString', coordinates: coords } as any;
+            }
+          }
+        }
+      } catch {}
+
+      // 自動保存（成功したら下書きを消す。失敗時は下書きを残す）
+      if (finalGeom) {
+        const saved = await saveGeometryAuto(finalGeom);
+        if (saved) {
+          try { draw.delete(id as any); } catch {}
+        }
+      }
+      // 地図のパン/ズームを再有効化
+      try { map.dragPan?.enable(); } catch {}
+      try { map.scrollZoom?.enable(); } catch {}
+      try { map.boxZoom?.enable(); } catch {}
+      try { map.doubleClickZoom?.enable(); } catch {}
+      try { map.touchZoomRotate?.enable(); } catch {}
+      try { e.preventDefault?.(); } catch {}
+    };
+
+    // リスナ登録
+    map.on('mousedown', onDown);
+    map.on('mousemove', onMove);
+    map.on('mouseup', onUp);
+    // タッチ（iPad/Safari/Chromeエミュレーション対策）
+    map.on('touchstart', onDown);
+    map.on('touchmove', onMove);
+    map.on('touchend', onUp);
+    // 保存: ハンドラの参照をプロパティに退避
+    (map as any)._raptorFH = { onDown, onMove, onUp };
+  }
+
+  function disableCustomFreehand() {
+    const map = mapRef.current as any;
+    if (!map) return;
+    customFHActiveRef.current = false;
+    customFHCapturingRef.current = false;
+    customFHTargetRef.current = null;
+    customFHLastScreenRef.current = null;
+    const h = (map as any)._raptorFH;
+    if (h) {
+      try { map.off('mousedown', h.onDown); } catch {}
+      try { map.off('mousemove', h.onMove); } catch {}
+      try { map.off('mouseup', h.onUp); } catch {}
+      try { map.off('touchstart', h.onDown); } catch {}
+      try { map.off('touchmove', h.onMove); } catch {}
+      try { map.off('touchend', h.onUp); } catch {}
+      (map as any)._raptorFH = null;
     }
   }
 
@@ -706,18 +1080,12 @@ export default function MapView() {
         </div>
           {/* 地物作成ツールバー（ドック：パネル上部に固定） */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '4px 0 8px 0' }}>
-            <button
-              onClick={()=> toggleDrawMode('draw_point')}
-              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_point' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_point' ? '#fff' : '#333' }}
-            >点</button>
-            <button
-              onClick={()=> toggleDrawMode('draw_line_string')}
-              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_line_string' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_line_string' ? '#fff' : '#333' }}
-            >線</button>
-            <button
-              onClick={()=> toggleDrawMode('draw_polygon')}
-              style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_polygon' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_polygon' ? '#fff' : '#333' }}
-            >面</button>
+            <button onClick={()=> toggleDrawMode('draw_point')} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_point' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_point' ? '#fff' : '#333' }}>点</button>
+            <button onClick={()=> toggleDrawMode('draw_line_string')} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_line_string' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_line_string' ? '#fff' : '#333' }}>線</button>
+            <button onClick={()=> toggleDrawMode('draw_polygon')} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='draw_polygon' ? '#1976d2' : '#fff', color: activeDrawMode==='draw_polygon' ? '#fff' : '#333' }}>面</button>
+            {/* フリーハンド（明示モード、線/面は自動判定しない） */}
+            <button onClick={()=> toggleFreehand('LineString')} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='freehand_line' ? '#1976d2' : '#fff', color: activeDrawMode==='freehand_line' ? '#fff' : '#333' }}>フリ線</button>
+            <button onClick={()=> toggleFreehand('Polygon')} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #ddd', background: activeDrawMode==='freehand_polygon' ? '#1976d2' : '#fff', color: activeDrawMode==='freehand_polygon' ? '#fff' : '#333' }}>フリ面</button>
             <button
               onClick={()=> drawRef.current?.trash()}
               title="削除"
