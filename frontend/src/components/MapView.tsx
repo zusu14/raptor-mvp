@@ -420,7 +420,19 @@ export default function MapView() {
       await loadSaved();
       // Draw 図形の扱い
       if (keepDrawAfterSave) {
-        draw.changeMode("simple_select");
+        // 今回保存に使用したドラフトだけ削除し、他の未保存は残す
+        try {
+          const fid = (feature as any)?.id;
+          if (fid != null) {
+            draw.delete(String(fid));
+          } else if (sel && Array.isArray(sel?.features) && sel.features.length) {
+            // 念のため選択状態のものを削除（安全側）
+            for (const f of sel.features) {
+              try { if (f?.id != null) draw.delete(String(f.id)); } catch {}
+            }
+          }
+        } catch {}
+        try { draw.changeMode("simple_select"); } catch {}
       } else {
         draw.deleteAll();
       }
