@@ -13,8 +13,8 @@ services:
 
   api:
     build: ./backend
-    ports:
-      - "8000:8000"
+    # ports:
+    #   - "8000:8000"
     env_file: .env
     environment:
       # DATABASE_URL が無い場合のデフォルト。必要なら .env 側で上書き可能。
