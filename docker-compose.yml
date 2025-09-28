@@ -38,7 +38,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:8
     ports:
-      - "5050:80"  # ブラウザから http://localhost:5050 でアクセス
+      - "5050:80" # ブラウザから http://localhost:5050 でアクセス
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
@@ -46,6 +46,17 @@ services:
       - db
     volumes:
       - pgadmin-data:/var/lib/pgadmin
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80" # 外部公開：80
+    depends_on:
+      - api
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    restart: unless-stopped
 
   # 任意: MinIO（S3互換）。必要時だけ起動
   # minio:
