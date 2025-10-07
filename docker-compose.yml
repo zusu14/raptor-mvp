@@ -50,13 +50,22 @@ services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "80:80" # 外部公開：80
+      - "80:80"
+      - "443:443"
     depends_on:
       - api
     volumes:
       - ./frontend/dist:/usr/share/nginx/html:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/www:/var/www/certbot:rw
+      - ./certbot/conf:/etc/letsencrypt:rw
     restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./certbot/www:/var/www/certbot:rw
+      - ./certbot/conf:/etc/letsencrypt:rw
 
   # 任意: MinIO（S3互換）。必要時だけ起動
   # minio:
